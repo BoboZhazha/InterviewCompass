@@ -4,28 +4,50 @@
 
 ## 1.为什么要使用Elasticsearch?
 
- 　　因为在我们商城中的数据，将来会非常多，所以采用以往的模糊查询，模糊查询前置配置，会放弃索引，导致商品查询是全表扫面，在百万级别的数据库中，效率非常低下，而我们使用ES做一个全文索引，我们将经常查询的商品的某些字段，比如说商品名，描述、价格还有id这些字段我们放入我们索引库里，可以提高查询速度。
+​		在没有es或者其他搜索引擎之前, 我们对一个关键字进行搜索, 都是用关系型数据库的模糊查询的(like), 随着数据量的增长,效率会急速的降低. 
+
+		1. es会对全文进行分词和索引(有了这个可以做同义词搜索等数据库解决不了的搜索问题)
+  		2. 根据程序员自定义的规则对查询的关键词进行权重打分.
+  		3. 从设计之初就支持分布式(分布式的优点).
+  		4. 通过倒排索引的方式来建立关键字到全文的映射关系来解决传统数据的全表扫描,极大的优化了查询的吞吐和速度.
 
 ## 2.Elasticsearch是如何实现Master选举的？
 
-　　Elasticsearch的选主是ZenDiscovery模块负责的，主要包含Ping（节点之间通过这个RPC来发现彼此）和Unicast（单播模块包含一个主机列表以控制哪些节点需要ping通）这两部分；
-　　对所有可以成为master的节点（node.master: true）根据nodeId字典排序，每次选举每个节点都把自己所知道节点排一次序，然后选出第一个（第0位）节点，暂且认为它是master节点。
-　　如果对某个节点的投票数达到一定的值（可以成为master节点数n/2+1）并且该节点自己也选举自己，那这个节点就是master。否则重新选举一直到满足上述条件。
-补充：master节点的职责主要包括集群、节点和索引的管理，不负责文档级别的管理；data节点可以关闭http功能。
+- Elasticsearch的选主是ZenDiscovery模块负责的，主要包含Ping（节点之间通过这个RPC来发现彼此）和Unicast（单播模块包含一个主机列表以控制哪些节点需要ping通）这两部分；
+- 对所有可以成为master的节点（**node.master: true**）根据nodeId字典排序，每次选举每个节点都把自己所知道节点排一次序，然后选出第一个（第0位）节点，暂且认为它是master节点。
+- 如果对某个节点的投票数达到一定的值（可以成为master节点数n/2+1）并且该节点自己也选举自己，那这个节点就是master。否则重新选举一直到满足上述条件。
+- *补充：master节点的职责主要包括集群、节点和索引的管理，不负责文档级别的管理；data节点可以关闭http功能*
 
 ## 3.Elasticsearch中的节点（比如共20个），其中的10个选了一个master，另外10个选了另一个master，怎么办？
 
-　　当集群master候选数量不小于3个时，可以通过设置最少投票通过数量（discovery.zen.minimum_master_nodes）超过所有候选节点一半以上来解决脑裂问题；
-当候选数量为两个时，只能修改为唯一的一个master候选，其他作为data节点，避免脑裂问题。
+- 当集群master候选数量不小于3个时，可以通过设置最少投票通过数量（**discovery.zen.minimum_master_nodes**）超过所有候选节点一半以上来解决脑裂问题；
+- 当候选数量为两个时，只能修改为唯一的一个master候选，其他作为data节点，避免脑裂问题。
 
-## 4.详细描述一下Elasticsearch索引文档的过程。
+## 4.客户端在和集群连接时，如何选择特定的节点执行请求的？
 
-　　协调节点默认使用文档ID参与计算（也支持通过routing），以便为路由提供合适的分片。
-　　shard = hash(document_id) % (num_of_primary_shards)
-　　当分片所在的节点接收到来自协调节点的请求后，会将请求写入到Memory Buffer，然后定时（默认是每隔1秒）写入到Filesystem Cache，这个从Momery Buffer到Filesystem 　　Cache的过程就叫做refresh；
-　　当然在某些情况下，存在Momery Buffer和Filesystem Cache的数据可能会丢失，ES是通过translog的机制来保证数据的可靠性的。其实现机制是接收到请求后，同时也会写入到translog中，当Filesystem cache中的数据写入到磁盘中时，才会清除掉，这个过程叫做flush；
-　　在flush过程中，内存中的缓冲将被清除，内容被写入一个新段，段的fsync将创建一个新的提交点，并将内容刷新到磁盘，旧的translog将被删除并开始一个新的translog。
-　　flush触发的时机是定时触发（默认30分钟）或者translog变得太大（默认为512M）时；
+​		TransportClient利用transport模块远程连接一个elasticsearch集群。它并不加入到集群中，只是简单的获得一个或者多个初始化的transport地址，并以 **轮询** 的方式与这些地址进行通信。
+
+## 5. 详细描述一下Elasticsearch索引文档的过程。
+
+​		协调节点默认使用文档ID参与计算（也支持通过routing），以便为路由提供合适的分片。
+
+```Java
+shard = hash(document_id) % (num_of_primary_shards)
+```
+
+- 当分片所在的节点接收到来自协调节点的请求后，会将请求写入到Memory Buffer，然后定时（默认是每隔1秒）写入到Filesystem Cache，这个从Momery Buffer到Filesystem Cache的过程就叫做refresh；
+- 当然在某些情况下，存在Momery Buffer和Filesystem Cache的数据可能会丢失，ES是通过translog的机制来保证数据的可靠性的。其实现机制是接收到请求后，同时也会写入到translog中，当Filesystem cache中的数据写入到磁盘中时，才会清除掉，这个过程叫做flush；
+- 在flush过程中，内存中的缓冲将被清除，内容被写入一个新段，段的fsync将创建一个新的提交点，并将内容刷新到磁盘，旧的translog将被删除并开始一个新的translog。
+- flush触发的时机是定时触发（默认30分钟）或者translog变得太大（默认为512M）时；
+
+[![Elasticsearch索引文档的过程](ElasticSearch的面试问题总结_images/1240.jpeg)](https://upload-images.jianshu.io/upload_images/3709321-2084bd0268a42ae1.jpeg?imageMogr2/auto-orient/strip|imageView2/2/w/1240)
+
+*补充：关于Lucene的Segement：*
+
+- Lucene索引是由多个段组成，段本身是一个功能齐全的倒排索引。
+- 段是不可变的，允许Lucene将新的文档增量地添加到索引中，而不用从头重建索引。
+- 对于每一个搜索请求而言，索引中的所有段都会被搜索，并且每个段会消耗CPU的时钟周、文件句柄和内存。这意味着段的数量越多，搜索性能会越低。
+- 为了解决这个问题，Elasticsearch会合并小段到一个较大的段，提交新的合并段到磁盘，并删除那些旧的小段。
 
 ## 5.详细描述一下Elasticsearch更新和删除文档的过程
 
@@ -33,7 +55,7 @@
 　　磁盘上的每个段都有一个相应的.del文件。当删除请求发送后，文档并没有真的被删除，而是在.del文件中被标记为删除。该文档依然能匹配查询，但是会在结果中被过滤掉。当段合并时，在.del文件中被标记为删除的文档将不会被写入新段。
 　　在新的文档被创建时，Elasticsearch会为该文档指定一个版本号，当执行更新时，旧版本的文档在.del文件中被标记为删除，新版本的文档被索引到一个新段。旧版本的文档依然能匹配查询，但是会在结果中被过滤掉。
 
-### 6.详细描述一下Elasticsearch搜索的过程
+## 6.详细描述一下Elasticsearch搜索的过程
 
 　　搜索被执行成一个两阶段过程，我们称之为 Query Then Fetch；
 　　在初始查询阶段时，查询会广播到索引中每一个分片拷贝（主分片或者副本分片）。 每个分片在本地执行搜索并构建一个匹配文档的大小为 from + size 的优先队列。PS：在搜索的时候是会查询Filesystem Cache的，但是有部分数据还在Memory Buffer，所以搜索是近实时的。
